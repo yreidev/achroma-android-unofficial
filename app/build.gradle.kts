@@ -11,7 +11,7 @@ val keystoreProperties = Properties().apply {
 }
 
 // 版本号只改这一处。versionCode 由它算出（1.2.3 → 10203），保证每次发版都比上一版大，手机上能直接覆盖升级
-val appVersion = "1.0.2"
+val appVersion = "1.0.3"
 val appVersionCode = appVersion.split('.').map(String::toInt).let { (major, minor, patch) -> major * 10_000 + minor * 100 + patch }
 
 android {
