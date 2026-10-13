@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">Achroma</string>
+    <string name="exit_hint">再按一次返回键退出</string>
+    <!-- 更新提示平时画在游戏里（assets/app/update.js），下面这些只在注入不上时给系统对话框用 -->
+    <string name="update_ask">发现新版本 v%1$d（当前 v%2$d，约 %3$s MB），现在更新吗？</string>
+    <string name="update_downloading">正在下载新版本 v%1$d…</string>
+    <string name="update_failed">下载失败，请检查网络后重试。</string>
+    <string name="update_done">已更新到 v%1$d</string>
+    <string name="update_rolled_back">新版本 v%1$d 启动失败，已退回 v%2$d</string>
+    <string name="update_now">更新</string>
+    <string name="update_later">稍后</string>
+    <string name="update_retry">重试</string>
+    <string name="update_cancel">取消</string>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12 起的系统启动画面：底色和游戏背景一致，图标沿用启动器图标 -->
+    <style name="Theme.Achroma" parent="Base.Theme.Achroma">
+        <item name="android:windowSplashScreenBackground">@color/bg</item>
+    </style>
+</resources>

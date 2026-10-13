@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+# 签名密钥和密码不入库
+*.jks
+*.keystore
+keystore.properties
+# 游戏文件版权归原作者，不入库；构建时由 scripts/sync-web.sh 从网页版拉取
+app/src/main/assets/ach/
+app/src/main/assets/.sync.*/

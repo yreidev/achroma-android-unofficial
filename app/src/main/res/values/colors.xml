@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与网页 body 背景一致 -->
+    <color name="bg">#050506</color>
+    <!-- 与 favicon 底板一致 -->
+    <color name="icon_bg">#09090A</color>
+</resources>
