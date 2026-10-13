@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.drawable.ClipDrawable
 import android.graphics.drawable.ColorDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -28,6 +29,7 @@ import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -37,9 +39,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.net.URISyntaxException
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.CancellationException
+import kotlin.concurrent.thread
 
 // 游戏文件在本地（见 GameFiles），但挂在线上的同一个地址下：页面的源还是 game.unsnow.online，
 // 相对路径的 api/ 请求照常发到服务器，登录 cookie、成绩上传和排行榜都和网页版一样
@@ -50,6 +58,9 @@ private const val BG = 0xFF050506.toInt()
 // 加载进度条用游戏里登录按钮高亮的 linux.do 黄
 private const val LOADING_COLOR = 0xFFFFB003.toInt()
 private const val TAG = "MainActivity"
+private const val STATE_EXPORT = "export"
+// 存档只有几 KB；选错成大文件时不整个读进内存
+private const val MAX_SAVE_BYTES = 1 shl 20
 
 // 应用本身已经全屏横屏，让游戏以为处在全屏状态：不再弹“全屏 + 横屏”询问，也不显示全屏按钮；
 // 设置里的全屏开关和 F 键调到的进出全屏什么都不做
@@ -110,7 +121,10 @@ class MainActivity : ComponentActivity() {
     }
     private var backAt = 0L
 
-    private val updateJs by lazy { assets.open("app/update.js").bufferedReader().use { it.readText() } }
+    // 两个注入脚本都用 panel.js 画询问框，拼在前面一起注入；中间的分号免得后一段的括号被当成调用
+    private val panelJs by lazy { asset("app/panel.js") }
+    private val updateJs by lazy { panelJs + ";\n" + asset("app/update.js") }
+    private val saveJs by lazy { panelJs + ";\n" + asset("app/save.js") }
     private var prompt = Prompt.NONE
     // 下载中才有；玩家取消时马上清掉，后台线程收尾时的回调就不再理会
     private var cancelDownload: (() -> Unit)? = null
@@ -124,9 +138,15 @@ class MainActivity : ComponentActivity() {
     // 系统对话框不像游戏里的面板能自己等到回主菜单：有要弹的就每秒看一次
     private val menuPoll = Runnable { syncUpdate() }
 
+    // 导出的存档内容先记着，等玩家在系统的“保存到”界面选好位置再写
+    private var exportData: String? = null
+    private val exportFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { onExportFile(it) }
+    private val importFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { onImportFile(it) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        exportData = savedInstanceState?.getString(STATE_EXPORT) // 选位置期间进程被回收过
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
@@ -228,17 +248,17 @@ class MainActivity : ComponentActivity() {
             failed = false // 重新载入后还没回答的新版本会重新问，不用再提下载失败
         }
 
-        // 游戏页面加载完：下载来的新版本先确认起来了，再挂上更新提示
+        // 游戏页面加载完：下载来的新版本先确认起来了，再挂上更新提示和存档导出、导入
         override fun onPageFinished(view: WebView, url: String?) {
             if (view !== web || !isGamePage(url)) return
-            if (!game.needsBootCheck) return attachUpdate(view)
+            if (!game.needsBootCheck) return attach(view)
             view.evaluateJavascript(BOOT_OK_JS) { ok ->
                 if (view !== web) return@evaluateJavascript
                 if (ok == "false") {
                     rollback()
                 } else {
                     game.booted()
-                    attachUpdate(view)
+                    attach(view)
                 }
             }
         }
@@ -313,6 +333,11 @@ class MainActivity : ComponentActivity() {
         if (hasFocus) hideSystemBars()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        exportData?.let { outState.putString(STATE_EXPORT, it) }
+    }
+
     override fun onPause() {
         web.evaluateJavascript(PAUSE_JS, null)
         web.onPause()
@@ -342,6 +367,13 @@ class MainActivity : ComponentActivity() {
         root.removeView(web)
         web.destroy()
         super.onDestroy()
+    }
+
+    private fun asset(path: String) = assets.open(path).bufferedReader().use { it.readText() }
+
+    private fun attach(view: WebView) {
+        attachUpdate(view)
+        view.evaluateJavascript(saveJs) { ok -> if (ok != "true") Log.w(TAG, "save export unavailable") }
     }
 
     // ---- 新版本提示：问玩家 → 下载并显示进度 → 回到主菜单首页时换上新版本重新载入 ----
@@ -408,6 +440,9 @@ class MainActivity : ComponentActivity() {
             }
             msg == "cancel" -> cancelUpdate()
             msg == "apply" -> reloadWithUpdate()
+            msg.startsWith("export:") -> exportSave(msg.removePrefix("export:"))
+            msg == "import" -> pickSave()
+            msg.startsWith("save-broken") -> Log.w(TAG, "save panel $msg")
             // 游戏里的面板出错停用了：改用系统对话框，正在下载就接着显示进度
             msg.startsWith("broken") -> {
                 Log.w(TAG, "update panel $msg")
@@ -522,5 +557,65 @@ class MainActivity : ComponentActivity() {
         dialog?.dismiss()
         dialog = null
         progressBar = null
+    }
+
+    // ---- 存档导出、导入（assets/app/save.js）：文件用系统的文件选择器存取，读写放在后台线程 ----
+
+    private fun exportSave(data: String) {
+        exportData = data
+        val name = "achroma-save-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
+        try {
+            exportFile.launch(name)
+        } catch (_: ActivityNotFoundException) {
+            exportData = null
+            saveCallback("exported(false)")
+        }
+    }
+
+    private fun onExportFile(uri: Uri?) {
+        val data = exportData
+        exportData = null
+        if (uri == null) return // 玩家取消了
+        if (data == null) return saveCallback("exported(false)")
+        thread(name = "save-export", isDaemon = true) {
+            val ok = runCatching {
+                (contentResolver.openOutputStream(uri) ?: throw IOException("no stream")).use { it.write(data.toByteArray()) }
+            }.onFailure { Log.w(TAG, "export failed", it) }.isSuccess
+            runOnUiThread { saveCallback("exported($ok)") }
+        }
+    }
+
+    private fun pickSave() {
+        try {
+            // 不按类型过滤：有的文件管理器、聊天软件存下来的 .json 类型不对，选不中；读出来由 save.js 认
+            importFile.launch(arrayOf("*/*"))
+        } catch (_: ActivityNotFoundException) {
+            saveCallback("failed()")
+        }
+    }
+
+    private fun onImportFile(uri: Uri?) {
+        if (uri == null) return
+        thread(name = "save-import", isDaemon = true) {
+            val text = runCatching { readSave(uri) }.onFailure { Log.w(TAG, "import failed", it) }.getOrNull()
+            runOnUiThread { saveCallback(if (text != null) "loaded(${JSONObject.quote(text)})" else "failed()") }
+        }
+    }
+
+    // 太大的文件肯定不是存档，当成空内容交给 save.js 提示“不是存档文件”
+    private fun readSave(uri: Uri): String = (contentResolver.openInputStream(uri) ?: throw IOException("no stream")).use { input ->
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            out.write(buf, 0, n)
+            if (out.size() > MAX_SAVE_BYTES) return ""
+        }
+        out.toString("UTF-8")
+    }
+
+    private fun saveCallback(call: String) {
+        if (!isDestroyed) web.evaluateJavascript("window.ACH_SAVE && ACH_SAVE.$call", null)
     }
 }

@@ -1,16 +1,18 @@
 // 应用内更新提示：画在游戏画布里，照搬网页版“全屏 + 横屏”询问框（touch.js 的 FSQ）的样式和操作方式，
 // 只在主菜单首页弹出，不打断对局；新版本下好后也等回到主菜单首页才换上。由 MainActivity 在页面加载完后注入，
 // 玩家的选择经 AchromaBridge 发回应用。
+// 询问框的样式和操作在 panel.js（应用把它拼在本文件前面一起注入）。
 // 用到的游戏函数缺了就返回 false，运行中出错就停用并发 broken，应用都会改用系统对话框。
 (function () {
   if (window.ACH_UPD) return !window.ACH_UPD.dead;
   try {
-    if (typeof AchromaBridge === 'undefined') return false;
-    [updateMenu, drawTouchUI, rect, box, text, wrapW, textW, isCJK, NOSTART, lineH, fitText, clamp, tr, pressed];
-    [G, MENU, Input, AU, NET, C, ctx, W, H, FRAME_DT];
+    if (typeof AchromaBridge === 'undefined' || !window.ACH_PANEL) return false;
+    [updateMenu, drawTouchUI, rect, box, text, tr];
+    [G, MENU, AU, NET, C, W];
   } catch (e) {
     return false;
   }
+  var P = ACH_PANEL;
 
   var S = {
     ask: { en: 'NEW VERSION V{n} IS OUT (YOU HAVE V{c}, ABOUT {mb}MB). UPDATE NOW?', zh: '發現新版本 v{n}（目前 v{c}，約 {mb} MB），現在更新嗎？', zhs: '发现新版本 v{n}（当前 v{c}，约 {mb} MB），现在更新吗？', ja: '新しいバージョン v{n} があります（現在 v{c}・約 {mb} MB）。今すぐ更新しますか？' },
@@ -46,63 +48,28 @@
   function close() { U.open = false; }
   function broken(e) { U.dead = true; U.open = false; try { post('broken:' + e); } catch (x) { } }
 
-  // 游戏的 wrapW 对中日文逐字断行，会把“0.9 MB”拆成两行；这里把英文数字串（连同后面的 MB）当成一个整体，其余照它的规则断
-  function wrap(s, maxW) {
-    if (!isCJK(s)) return wrapW(s, maxW, 2);
-    var out = [], line = '';
-    (s.match(/[A-Za-z0-9.]+(?: MB)?|[\s\S]/g) || []).forEach(function (t) {
-      if (line && textW(line + t, 2) > maxW && NOSTART.indexOf(t) < 0) { out.push(line.replace(/ +$/, '')); line = t === ' ' ? '' : t; } else line += t;
-    });
-    if (line) out.push(line);
-    return out;
-  }
-
-  // 和 fsLayout 同一套尺寸；下载中在文字和按钮之间多一行进度条
-  function lay() {
-    var pw = 300, lines = wrap(say(U.mode), pw - 28), lh = lineH(2), bh = lines.length * lh, barH = U.mode === 'busy' ? 16 : 0,
-      ph = 26 + bh + barH + 14 + 24 + 14, px = Math.round(W / 2 - pw / 2), py = Math.round(H / 2 - ph / 2), by = py + 26 + bh + barH + 10, bw = 118, gap = 12,
-      keys = BTNS[U.mode], btns = keys.length === 1 ? [{ x: W / 2 - bw / 2, y: by, w: bw, h: 24 }]
-        : [{ x: W / 2 - gap / 2 - bw, y: by, w: bw, h: 24 }, { x: W / 2 + gap / 2, y: by, w: bw, h: 24 }];
-    return { pw: pw, ph: ph, px: px, py: py, lines: lines, lh: lh, barY: py + 26 + bh + 2, keys: keys, btns: btns };
-  }
-  function hit(l, x, y) { for (var i = 0; i < l.btns.length; i++) { var b = l.btns[i]; if (x >= b.x - 4 && x <= b.x + b.w + 4 && y >= b.y - 4 && y <= b.y + b.h + 4) return i; } return -1; }
+  // 下载中在文字和按钮之间多一行进度条
+  function lay() { return P.lay(say(U.mode), BTNS[U.mode].length, U.mode === 'busy' ? 16 : 0); }
 
   function choose(key) {
-    Input.clicked = false; Input.down = false;
+    P.done();
     try { AU.init(); AU.play(key === 'later' || key === 'cancel' ? 'menu' : 'menuOk', key === 'later' || key === 'cancel' ? .8 : 1); } catch (e) { }
     if (key === 'update' || key === 'retry') { U.done = 0; U.total = 0; show('busy'); post('update'); }
     else { close(); post(key); }
   }
 
   function step() {
-    // 刚弹出的这一帧不处理输入：这时按下的键、点下去的位置是冲着主菜单去的（比如返回键转成的 Esc）
-    if (U.t === 0) { U.t += FRAME_DT; Input.clicked = false; return; }
-    U.t += FRAME_DT;
-    var l = lay();
-    if (pressed('KeyA') || pressed('ArrowLeft')) U.sel = 0;
-    if (pressed('KeyD') || pressed('ArrowRight')) U.sel = l.btns.length - 1;
-    // 和 FSQ 一样按下时选中、松手时还在同一个按钮上才算点，滑出去再松手就作废
-    if (Input.clicked) { Input.clicked = false; U.down = hit(l, Input.mx, Input.my); if (U.down >= 0) U.sel = U.down; }
-    else if (U.down >= 0 && !Input.down) { var d = U.down; U.down = -1; if (hit(l, Input.mx, Input.my) === d) choose(l.keys[d]); }
-    else if (pressed('Enter') || pressed('Space')) choose(l.keys[U.sel]);
-    else if (pressed('Escape') && U.mode !== 'busy') choose('later'); // 下载中按返回不打断，要停就点取消
+    var i = P.step(U, lay());
+    if (i === 'esc') { if (U.mode !== 'busy') choose('later'); } // 下载中按返回不打断，要停就点取消
+    else if (i >= 0) choose(BTNS[U.mode][i]);
   }
 
   function draw() {
-    var k = clamp(U.t / .25, 0, 1), l = lay(), px = l.px, py = l.py, pw = l.pw;
-    ctx.globalAlpha = .75 * k; rect(0, 0, W, H, '#000'); ctx.globalAlpha = k;
-    rect(px, py, pw, l.ph, '#0b0b0d'); box(px, py, pw, l.ph, null, '#2b2b30'); rect(px + 14, py + 10, 20, 1, '#f0efe8');
-    l.lines.forEach(function (s, i) { text(s, W / 2, py + 18 + i * l.lh, '#e8e8ec', 2, 'center'); });
-    if (U.mode === 'busy') {
-      var bx = px + 24, bw = pw - 48 - 44, frac = U.total ? U.done / U.total : 0;
-      box(bx, l.barY, bw, 6, '#09090a', '#3b3b42'); if (frac > 0) rect(bx + 1, l.barY + 1, Math.round((bw - 2) * frac), 4, '#f0efe8');
-      if (U.total) text(U.done + ' / ' + U.total, px + pw - 24, l.barY + 1, '#8c8c93', 1, 'right');
-    }
-    l.btns.forEach(function (b, i) {
-      var on = U.sel === i; if (on) rect(b.x, b.y, b.w, b.h, '#f0efe8'); else box(b.x, b.y, b.w, b.h, null, '#3b3b42');
-      text(fitText(tr(S[l.keys[i]]), b.w - 10, 2), b.x + b.w / 2, b.y + 7, on ? '#09090a' : '#8c8c93', 2, 'center');
-    });
-    ctx.globalAlpha = 1;
+    P.draw(U, lay(), BTNS[U.mode].map(function (k) { return tr(S[k]); }), U.mode === 'busy' ? function (l) {
+      var bx = l.px + 24, bw = l.pw - 48 - 44, frac = U.total ? U.done / U.total : 0;
+      box(bx, l.extraY, bw, 6, '#09090a', '#3b3b42'); if (frac > 0) rect(bx + 1, l.extraY + 1, Math.round((bw - 2) * frac), 4, '#f0efe8');
+      if (U.total) text(U.done + ' / ' + U.total, l.px + l.pw - 24, l.extraY + 1, '#8c8c93', 1, 'right');
+    } : null);
   }
 
   // 和 FSQ 一样挂在 updateMenu / drawTouchUI 上：面板开着时接管主菜单的输入和最上层的绘制
